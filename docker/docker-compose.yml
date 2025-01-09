@@ -1,0 +1,167 @@
+version: "3.5"
+
+services:
+  elasticsearch:
+    container_name: temporal-elasticsearch
+    environment:
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms256m -Xmx512m
+      - xpack.security.enabled=true
+      - xpack.ml.enabled=false
+      - ELASTIC_USERNAME=elastic
+      - ELASTIC_PASSWORD=test
+      - xpack.license.self_generated.type=trial
+    image: elasticsearch:${ELASTICSEARCH_VERSION}
+    networks:
+      - temporal-network
+    ports:
+      - 9200:9200
+    expose:
+      - 9200
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data
+
+  kibana:
+    platform: linux/x86_64
+    image: kibana:7.8.1
+    volumes:
+      - ./custom/kibana.yml:/usr/share/kibana/config/kibana.yml
+      - ./deployment/elasticsearch/config.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+    ports:
+      - 5601:5601
+    networks:
+      - temporal-network
+
+  logstash:
+    container_name: logstash
+    image: docker.elastic.co/logstash/logstash:8.10.3
+    ports:
+      - "5044:5044" # Port for Logstash Beats input
+    environment:
+      LS_JAVA_OPTS: "-Xmx512m -Xms256m" # JVM options for Logstash
+    volumes:
+      - ./deployment/logstash/pipeline:/usr/share/logstash/pipeline # Mount pipeline configuration
+      - ./deployment/logstash/config:/usr/share/logstash/config    # Mount Logstash configuration
+    depends_on:
+      - elasticsearch
+    networks:
+      - temporal-network
+
+  temporal:
+    depends_on:
+      - elasticsearch
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=host.docker.internal
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=true
+      - ES_SEEDS=elasticsearch
+      - ES_VERSION=v7
+      - ES_USER=elastic
+      - ES_PWD=test
+    image: temporalio/auto-setup:${TEMPORAL_VERSION}
+    networks:
+      - temporal-network
+    expose:
+      - 7233
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+    deploy:
+      replicas: 1
+
+  nginx:
+    container_name: temporal-nginx
+    image: nginx:1.22
+    depends_on:
+      - temporal
+    ports:
+      - 7233:7233
+      - 8082:8082
+    networks:
+      - temporal-network
+    volumes:
+      - ./custom/nginx.conf:/etc/nginx/nginx.conf
+      - ./custom/.htpasswd:/etc/nginx/.htpasswd
+#sammy:123
+
+  temporal-admin-tools:
+    container_name: temporal-admin-tools
+    depends_on:
+      - nginx
+    environment:
+      - TEMPORAL_ADDRESS=nginx:7233
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION}
+    networks:
+      - temporal-network
+    stdin_open: true
+    tty: true
+
+  temporal-ui:
+    container_name: temporal-ui
+    depends_on:
+      - nginx
+    environment:
+      - TEMPORAL_ADDRESS=nginx:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    image: temporalio/ui:${TEMPORAL_UI_VERSION}
+    networks:
+      - temporal-network
+    expose:
+      - "8080"
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v3.0.1
+    ports:
+      - published: 9090
+        target: 9090
+    volumes:
+      - type: bind
+        source: ./deployment/prometheus/config.yml
+        target: /etc/prometheus/prometheus.yml
+    depends_on:
+      - temporal
+    networks:
+      - temporal-network
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:11.0.1
+    build: './deployment/grafana'
+    environment:
+      - GF_SECURITY_ADMIN_USER=test
+      - GF_SECURITY_ADMIN_PASSWORD=test
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    ports:
+      - published: 8085
+        target: 3000
+    volumes:
+      - type: bind
+        source: ./deployment/grafana/provisioning/datasources
+        target: /etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - temporal-network
+
+  database:
+    image: postgres:15.5
+    container_name: 'postgres12'
+    tty: true
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: "temporal"
+      POSTGRES_USER: "temporal"
+      POSTGRES_PASSWORD: "temporal"
+    networks:
+      - temporal-network
+networks:
+  temporal-network:
+    driver: bridge

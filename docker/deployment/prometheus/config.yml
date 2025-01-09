@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 10s
+scrape_configs:
+  - job_name: 'temporalmetrics'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      # Server metrics target
+      - targets:
+          - 'nginx:7233'
+        labels:
+          group: 'server-metrics'
+
+      # Docker metrics
+      - targets:
+          - 'host.docker.internal:9323'
+        labels:
+          group: 'docker-metrics'
+
+  - job_name: 'cbs-metrics'
+    metrics_path: /cbs-metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - 'host.docker.internal:8080'
+        labels:
+          group: 'cbs-metrics'
